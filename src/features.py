@@ -6,6 +6,7 @@ Generates lightweight, compact numeric features for candidate pairs.
 """
 
 from typing import Dict, List, Tuple, Union, Optional, Any, Set
+import unicodedata
 import re
 import numpy as np
 import pandas as pd
@@ -36,27 +37,56 @@ FEATURE_NAMES = [
 ]
 
 
-def _get_char_ngrams(text: str, n: int = 3) -> Set[str]:
-    """Extract character n-grams from text."""
+def _normalize_text(text: Any) -> str:
+    """Normalize string using Unicode NFKD, lowercase, and strip whitespace."""
+    if text is None or pd.isna(text):
+        return ""
+    text_str = str(text).strip().lower()
+    # Normalize Unicode characters (e.g., accents, umlauts, fullwidth chars)
+    normalized = unicodedata.normalize("NFKD", text_str)
+    # Remove combining diacritical marks for robust matching while preserving base characters
+    stripped = "".join(c for c in normalized if not unicodedata.combining(c))
+    return stripped.strip()
+
+
+def _get_char_ngrams(
+    text: str,
+    min_n: int = 2,
+    max_n: int = 3,
+    n: Optional[int] = None,
+) -> Set[str]:
+    """
+    Extract boundary-padded character n-gram sets from text.
+    Padding with boundary markers enables meaningful similarity for short strings.
+    """
     if not text:
         return set()
-    if len(text) < n:
-        return {text}
-    return {text[i:i + n] for i in range(len(text) - n + 1)}
+    if n is not None:
+        min_n = n
+        max_n = n
+    padded = f"^{text}$"
+    ngrams: Set[str] = set()
+    for k in range(min_n, max_n + 1):
+        if len(padded) >= k:
+            for i in range(len(padded) - k + 1):
+                ngrams.add(padded[i:i + k])
+        else:
+            ngrams.add(padded)
+    return ngrams
 
 
 def _extract_numeric_tokens(text: str) -> Set[str]:
-    """Extract numeric/digit tokens (PIN, ZIP, building numbers)."""
+    """Extract all numeric digit sequences (PIN, ZIP, building numbers)."""
     if not text:
         return set()
-    return set(re.findall(r"\b\d+\b", text))
+    return set(re.findall(r"\d+", text))
 
 
 def _tokenize(text: str) -> List[str]:
     """Tokenize string into lowercase alphanumeric words."""
     if not text:
         return []
-    return re.findall(r"\b\w+\b", text.lower())
+    return re.findall(r"\b\w+\b", text)
 
 
 def jaccard_similarity(set1: Set[Any], set2: Set[Any]) -> float:
@@ -115,30 +145,30 @@ class EntityRecord:
         business_address: Optional[str] = "",
         country: Optional[str] = "",
     ):
-        self.entity_id = str(entity_id)
+        self.entity_id = str(entity_id).strip()
         
         # Name preprocessing
-        name_clean = str(business_name).strip().lower() if business_name is not None and not pd.isna(business_name) else ""
+        name_clean = _normalize_text(business_name)
         self.name = name_clean
         self.has_name = bool(name_clean)
         self.name_len = len(name_clean)
         self.name_tokens = _tokenize(name_clean)
         self.name_token_set = set(self.name_tokens)
         self.name_token_count = len(self.name_tokens)
-        self.name_char_ngrams = _get_char_ngrams(name_clean, n=3)
+        self.name_char_ngrams = _get_char_ngrams(name_clean, min_n=2, max_n=3)
 
         # Address preprocessing
-        addr_clean = str(business_address).strip().lower() if business_address is not None and not pd.isna(business_address) else ""
+        addr_clean = _normalize_text(business_address)
         self.addr = addr_clean
         self.has_addr = bool(addr_clean)
         self.addr_len = len(addr_clean)
         self.addr_tokens = _tokenize(addr_clean)
         self.addr_token_set = set(self.addr_tokens)
-        self.addr_char_ngrams = _get_char_ngrams(addr_clean, n=3)
+        self.addr_char_ngrams = _get_char_ngrams(addr_clean, min_n=2, max_n=3)
         self.addr_numeric_tokens = _extract_numeric_tokens(addr_clean)
 
         # Country preprocessing
-        country_clean = str(country).strip().upper() if country is not None and not pd.isna(country) else ""
+        country_clean = _normalize_text(country).upper()
         self.country = country_clean
         self.has_country = bool(country_clean)
 

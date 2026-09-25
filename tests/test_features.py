@@ -47,9 +47,19 @@ def test_unicode_and_diacritics_french_records():
     rec2 = EntityRecord("S2-FR1", "societe generale", "29 blvd haussmann paris", "France")
     feats = compute_pair_features(rec1, rec2)
     feat_dict = dict(zip(FEATURE_NAMES, feats))
+    assert feat_dict["name_exact_match"] == 1.0  # NFKD strips combining accents to match
     assert feat_dict["country_exact_match"] == 1.0
     assert feat_dict["country_missing"] == 0.0
     assert feat_dict["addr_numeric_overlap"] == 1.0  # both have '29'
+
+
+def test_short_string_padded_ngrams():
+    rec1 = EntityRecord("S1-1", "IBM", "Armonk NY", "US")
+    rec2 = EntityRecord("S2-1", "IBM Corp", "Armonk NY", "US")
+    feats = compute_pair_features(rec1, rec2)
+    feat_dict = dict(zip(FEATURE_NAMES, feats))
+    assert feat_dict["name_char_jaccard"] > 0.25  # Combined 2/3-grams find common root
+    assert feat_dict["name_token_overlap"] == 1.0  # IBM is full subset of IBM Corp
 
 
 def test_numeric_address_matching():
@@ -111,7 +121,7 @@ def test_source_type_indicators():
     assert f3["is_source_3"] == 1.0
 
 
-def test_feature_extractor_batch():
+def test_feature_extractor_batch_and_empty():
     s1_df = pd.DataFrame([
         {"entity_id": "S1-1", "business_name": "Apple Inc", "business_address": "1 Infinite Loop", "country": "US"},
         {"entity_id": "S1-2", "business_name": "Microsoft", "business_address": "One Microsoft Way", "country": "US"},
@@ -129,3 +139,7 @@ def test_feature_extractor_batch():
 
     assert X.shape == (2, len(FEATURE_NAMES))
     assert X.dtype == np.float32
+
+    # Empty pairs check
+    X_empty = extractor.extract_features([], s1_cache, cand_cache)
+    assert X_empty.shape == (0, len(FEATURE_NAMES))

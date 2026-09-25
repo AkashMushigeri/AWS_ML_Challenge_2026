@@ -121,8 +121,13 @@ def parse_ground_truth_df(df_gt: pd.DataFrame) -> Dict[str, Set[str]]:
     gt_dict: Dict[str, Set[str]] = {}
     for row in df_gt.itertuples(index=False):
         s1_id = str(getattr(row, "source1_entity_id", "")).strip()
-        matched_str = str(getattr(row, "matched_entity_ids", "")).strip()
-        if pd.isna(matched_str) or matched_str == "" or matched_str == "nan":
+        matched_val = getattr(row, "matched_entity_ids", "")
+        if pd.isna(matched_val) or matched_val is None:
+            gt_dict[s1_id] = set()
+            continue
+            
+        matched_str = str(matched_val).strip()
+        if matched_str.lower() in {"", "nan", "none", "null", "[]", "set()"}:
             gt_dict[s1_id] = set()
         else:
             # Comma-separated list

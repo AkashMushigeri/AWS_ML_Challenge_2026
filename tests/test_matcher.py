@@ -42,12 +42,12 @@ def test_weighted_score_matcher_logic():
 
 
 def test_logistic_regression_matcher():
-    # Synthetic dataset
+    # Synthetic dataset with large unscaled length difference
     X_train = np.array([
         [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 20.0, 5.0, 0.0, 0.0, 0.0, 0.0, 30.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 100.0, 20.0, 0.0, 0.0, 0.0, 0.0, 80.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         [0.9, 0.8, 0.9, 0.8, 2.0, 1.0, 0.8, 0.7, 1.0, 0.8, 3.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        [0.1, 0.1, 0.1, 0.1, 15.0, 4.0, 0.0, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        [0.1, 0.1, 0.1, 0.1, 95.0, 18.0, 0.0, 0.0, 0.0, 0.0, 90.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
     ], dtype=np.float32)
     y_train = np.array([1, 0, 1, 0], dtype=np.int32)
 
@@ -57,6 +57,17 @@ def test_logistic_regression_matcher():
     probs = clf_matcher.predict_proba(X_train)
     assert probs[0] > probs[1]
     assert probs[2] > probs[3]
+
+
+def test_logistic_regression_single_class_edge_case():
+    X_train = np.ones((5, 17), dtype=np.float32)
+    y_train = np.zeros(5, dtype=np.int32)  # All 0s
+
+    clf = LogisticRegressionMatcher(random_state=42)
+    clf.fit(X_train, y_train)
+    probs = clf.predict_proba(X_train)
+    assert len(probs) == 5
+    assert np.all(probs == 0.0)
 
 
 def test_aggregate_predictions_and_singletons():
@@ -88,22 +99,20 @@ def test_threshold_tuning():
         ("S1-1", "S2-2"),
         ("S1-2", "S3-1"),
     ]
-    # S1-1 matches S2-1 (true), S2-2 is negative. S1-2 is singleton.
     gt = {
         "S1-1": {"S2-1"},
         "S1-2": set(),
     }
-    # Features matrix with known properties
     X_val = np.zeros((3, 17), dtype=np.float32)
-    X_val[0, 0] = 1.0  # Exact name match (S1-1, S2-1)
+    X_val[0, 0] = 1.0
     X_val[0, 1] = 1.0
     X_val[0, 6] = 1.0
     X_val[0, 11] = 1.0
 
-    X_val[1, 1] = 0.5  # Partial match (S1-1, S2-2)
+    X_val[1, 1] = 0.5
     X_val[1, 11] = 1.0
 
-    X_val[2, 1] = 0.3  # Weak candidate for singleton S1-2 (S1-2, S3-1)
+    X_val[2, 1] = 0.3
     X_val[2, 11] = 1.0
 
     matcher = WeightedScoreMatcher()

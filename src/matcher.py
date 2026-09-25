@@ -9,6 +9,7 @@ from typing import Dict, List, Set, Tuple, Union, Optional, Any
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 
 from src.features import FEATURE_NAMES
 from src.metrics import evaluate_predictions
@@ -46,7 +47,7 @@ class WeightedScoreMatcher(BaseMatcher):
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """Compute weighted similarity score for each candidate pair."""
-        if X.shape[0] == 0:
+        if X is None or X.shape[0] == 0:
             return np.empty((0,), dtype=np.float32)
 
         scores = np.zeros(X.shape[0], dtype=np.float32)
@@ -73,7 +74,7 @@ class WeightedScoreMatcher(BaseMatcher):
 
 class LogisticRegressionMatcher(BaseMatcher):
     """
-    Supervised Logistic Regression pairwise matcher.
+    Supervised Logistic Regression pairwise matcher with feature standardization.
     Trained on positive ground truth matches and negative candidate non-matches.
     """
 
@@ -91,11 +92,25 @@ class LogisticRegressionMatcher(BaseMatcher):
             max_iter=max_iter,
             solver="lbfgs",
         )
+        self.scaler = StandardScaler()
         self.is_fitted = False
+        self._single_class_fallback: Optional[float] = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "LogisticRegressionMatcher":
         """Fit model on feature matrix X and binary labels y (1=match, 0=non-match)."""
-        self.clf.fit(X, y)
+        if len(y) == 0:
+            raise ValueError("Cannot fit LogisticRegressionMatcher on empty data.")
+        
+        unique_classes = np.unique(y)
+        if len(unique_classes) < 2:
+            # Handle edge case where training set has only one class
+            self._single_class_fallback = 1.0 if unique_classes[0] == 1 else 0.0
+            self.is_fitted = True
+            return self
+
+        X_scaled = self.scaler.fit_transform(X)
+        self.clf.fit(X_scaled, y)
+        self._single_class_fallback = None
         self.is_fitted = True
         return self
 
@@ -103,16 +118,21 @@ class LogisticRegressionMatcher(BaseMatcher):
         """Predict probability of positive match (class 1)."""
         if not self.is_fitted:
             raise ValueError("Matcher is not fitted yet. Call fit() first.")
-        if X.shape[0] == 0:
+        if X is None or X.shape[0] == 0:
             return np.empty((0,), dtype=np.float32)
-        probs = self.clf.predict_proba(X)
+
+        if self._single_class_fallback is not None:
+            return np.full(X.shape[0], self._single_class_fallback, dtype=np.float32)
+
+        X_scaled = self.scaler.transform(X)
+        probs = self.clf.predict_proba(X_scaled)
         # Class 1 probability
         return probs[:, 1].astype(np.float32)
 
 
 def aggregate_predictions(
     candidate_pairs: Union[List[Tuple[str, str]], pd.DataFrame],
-    scores: np.ndarray,
+    scores: Union[np.ndarray, List[float]],
     threshold: float,
     all_s1_ids: Optional[List[str]] = None,
 ) -> Dict[str, List[str]]:
@@ -135,13 +155,15 @@ def aggregate_predictions(
         s1_col = [str(pair[0]) for pair in candidate_pairs]
         cand_col = [str(pair[1]) for pair in candidate_pairs]
 
+    scores_arr = np.asarray(scores, dtype=np.float32)
+
     predictions: Dict[str, List[Tuple[str, float]]] = {}
     if all_s1_ids is not None:
         for s1_id in all_s1_ids:
             predictions[str(s1_id)] = []
 
     for idx, (s1_id, cand_id) in enumerate(zip(s1_col, cand_col)):
-        score = float(scores[idx])
+        score = float(scores_arr[idx])
         if score >= threshold:
             # Avoid self-matches if any S1 ID accidentally appears as candidate
             if not cand_id.startswith("S1-") and cand_id != s1_id:

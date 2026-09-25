@@ -3,7 +3,9 @@ Unit tests for Metrics module (Member 3).
 """
 
 import pytest
-from src.metrics import compute_entity_f05, evaluate_predictions
+import pandas as pd
+import numpy as np
+from src.metrics import compute_entity_f05, evaluate_predictions, parse_ground_truth_df
 
 
 def test_singleton_perfect_credit():
@@ -63,3 +65,19 @@ def test_macro_evaluation():
     assert res["f05"] == 1.0
     assert res["total_entities"] == 2
     assert res["singleton_count"] == 1
+
+
+def test_parse_ground_truth_df_robust():
+    df = pd.DataFrame([
+        {"source1_entity_id": "S1-1", "matched_entity_ids": "S2-1, S3-2"},
+        {"source1_entity_id": "S1-2", "matched_entity_ids": np.nan},
+        {"source1_entity_id": "S1-3", "matched_entity_ids": ""},
+        {"source1_entity_id": "S1-4", "matched_entity_ids": "None"},
+        {"source1_entity_id": "S1-5", "matched_entity_ids": "nan"},
+    ])
+    gt = parse_ground_truth_df(df)
+    assert gt["S1-1"] == {"S2-1", "S3-2"}
+    assert gt["S1-2"] == set()
+    assert gt["S1-3"] == set()
+    assert gt["S1-4"] == set()
+    assert gt["S1-5"] == set()

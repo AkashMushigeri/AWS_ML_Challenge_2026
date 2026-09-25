@@ -1,0 +1,4 @@
+# Pinned dependencies for AWS ML Challenge 2026 - Business Entity Resolution V1
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0

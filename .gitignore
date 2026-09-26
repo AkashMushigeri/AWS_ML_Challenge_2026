@@ -2,6 +2,7 @@
 
 # Large dataset files (multi-gigabytes)
 dataset/
+data/
 *.tsv.gz
 *.zip
 
@@ -13,3 +14,4 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.kilo/

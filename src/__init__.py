@@ -1,3 +1,3 @@
-"""AWS ML Challenge 2026 - Business Entity Resolution V1 Package."""
+"""AWS ML Challenge 2026 - Business Entity Resolution Package."""
 
 __version__ = "1.0.0"

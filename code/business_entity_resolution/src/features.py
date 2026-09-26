@@ -1,155 +1,357 @@
-"""Pairwise Similarity Feature Extraction Module.
+"""Pairwise similarity feature engineering for Entity Resolution.
 
-Member 3 (Features + Matcher) ownership.
-Extracts compact, lightweight numeric similarity features for candidate pairs.
+Member 3 Component: Features + Baseline Matcher.
+Generates lightweight, compact numeric features for candidate pairs.
 """
 
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Tuple, Union, Optional, Any, Set
+import unicodedata
+import re
 import numpy as np
 import pandas as pd
 
-from src.normalizer import (
-    extract_numeric_tokens,
-    normalize_address,
-    normalize_business_name,
-    normalize_country,
-)
 from src.utils import get_logger
 
 logger = get_logger("Features")
 
 FEATURE_NAMES = [
-    "feat_name_exact",
-    "feat_name_token_jaccard",
-    "feat_name_token_overlap",
-    "feat_name_char_sim",
-    "feat_name_len_diff",
-    "feat_name_token_diff",
-    "feat_addr_exact",
-    "feat_addr_token_jaccard",
-    "feat_addr_num_overlap",
-    "feat_addr_char_sim",
-    "feat_addr_len_diff",
-    "feat_country_match",
-    "feat_country_missing",
-    "feat_name_missing",
-    "feat_addr_missing",
-    "feat_source_is_s3",
+    # Business Name Features
+    "name_exact_match",
+    "name_token_jaccard",
+    "name_token_overlap",
+    "name_char_jaccard",
+    "name_length_diff",
+    "name_token_count_diff",
+    # Address Features
+    "addr_exact_match",
+    "addr_token_jaccard",
+    "addr_numeric_overlap",
+    "addr_char_jaccard",
+    "addr_length_diff",
+    # Country Features
+    "country_exact_match",
+    "country_missing",
+    # Meta Features
+    "missing_name",
+    "missing_addr",
+    "is_source_2",
+    "is_source_3",
 ]
 
 
-def get_char_ngrams(text: str, n: int = 3) -> Set[str]:
-    """Return set of character n-grams."""
-    if len(text) < n:
-        return {text} if text else set()
-    return {text[i : i + n] for i in range(len(text) - n + 1)}
+def _normalize_text(text: Any) -> str:
+    """Normalize string using Unicode NFKD, lowercase, and strip whitespace."""
+    if text is None or pd.isna(text):
+        return ""
+    text_str = str(text).strip().lower()
+    # Normalize Unicode characters (e.g., accents, umlauts, fullwidth chars)
+    normalized = unicodedata.normalize("NFKD", text_str)
+    # Remove combining diacritical marks for robust matching while preserving base characters
+    stripped = "".join(c for c in normalized if not unicodedata.combining(c))
+    return stripped.strip()
 
 
-def jaccard_similarity(set_a: Set, set_b: Set) -> float:
-    """Compute Jaccard similarity between two sets."""
-    if not set_a and not set_b:
+def _get_char_ngrams(
+    text: str,
+    min_n: int = 2,
+    max_n: int = 3,
+    n: Optional[int] = None,
+) -> Set[str]:
+    """
+    Extract boundary-padded character n-gram sets from text.
+    Padding with boundary markers enables meaningful similarity for short strings.
+    """
+    if not text:
+        return set()
+    if n is not None:
+        min_n = n
+        max_n = n
+    padded = f"^{text}$"
+    ngrams: Set[str] = set()
+    for k in range(min_n, max_n + 1):
+        if len(padded) >= k:
+            for i in range(len(padded) - k + 1):
+                ngrams.add(padded[i:i + k])
+        else:
+            ngrams.add(padded)
+    return ngrams
+
+
+# Alias for backward compatibility
+get_char_ngrams = _get_char_ngrams
+
+
+def _extract_numeric_tokens(text: str) -> Set[str]:
+    """Extract all numeric digit sequences (PIN, ZIP, building numbers)."""
+    if not text:
+        return set()
+    return set(re.findall(r"\d+", text))
+
+
+def _tokenize(text: str) -> List[str]:
+    """Tokenize string into lowercase alphanumeric words."""
+    if not text:
+        return []
+    return re.findall(r"\b\w+\b", text)
+
+
+def jaccard_similarity(set1: Set[Any], set2: Set[Any]) -> float:
+    """Compute Jaccard similarity between two sets: |A ∩ B| / |A ∪ B|."""
+    if not set1 and not set2:
         return 1.0
-    if not set_a or not set_b:
+    if not set1 or not set2:
         return 0.0
-    intersection = len(set_a & set_b)
-    union = len(set_a | set_b)
-    return intersection / union if union > 0 else 0.0
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return float(intersection) / float(union) if union > 0 else 0.0
 
 
-def overlap_coefficient(set_a: Set, set_b: Set) -> float:
-    """Compute Overlap coefficient: |A n B| / min(|A|, |B|)."""
-    if not set_a and not set_b:
+def overlap_coefficient(set1: Set[Any], set2: Set[Any]) -> float:
+    """Compute Overlap coefficient: |A ∩ B| / min(|A|, |B|)."""
+    if not set1 and not set2:
         return 1.0
-    if not set_a or not set_b:
+    if not set1 or not set2:
         return 0.0
-    intersection = len(set_a & set_b)
-    min_len = min(len(set_a), len(set_b))
-    return intersection / min_len if min_len > 0 else 0.0
+    min_len = min(len(set1), len(set2))
+    if min_len == 0:
+        return 0.0
+    return float(len(set1.intersection(set2))) / float(min_len)
 
 
-class ProcessedRecord:
-    """Cached preprocessed representation of a record for fast feature extraction."""
-
+class EntityRecord:
+    """
+    Compact preprocessed entity representation to cache tokenization
+    and avoid repeated string computations during pairwise comparison.
+    """
     __slots__ = (
         "entity_id",
-        "norm_name",
+        "name",
+        "name_len",
         "name_tokens",
         "name_token_set",
+        "name_token_count",
         "name_char_ngrams",
-        "norm_addr",
+        "addr",
+        "addr_len",
         "addr_tokens",
         "addr_token_set",
-        "addr_num_set",
         "addr_char_ngrams",
-        "norm_ctry",
-        "is_s3",
+        "addr_numeric_tokens",
+        "country",
+        "has_name",
+        "has_addr",
+        "has_country",
+        "source_type",
     )
 
-    def __init__(self, entity_id: str, name: str, addr: str, ctry: str):
-        self.entity_id = entity_id
-        self.norm_name = normalize_business_name(name)
-        self.name_tokens = self.norm_name.split()
+    def __init__(
+        self,
+        entity_id: str,
+        business_name: Optional[str] = "",
+        business_address: Optional[str] = "",
+        country: Optional[str] = "",
+    ):
+        self.entity_id = str(entity_id).strip()
+
+        # Name preprocessing
+        name_clean = _normalize_text(business_name)
+        self.name = name_clean
+        self.has_name = bool(name_clean)
+        self.name_len = len(name_clean)
+        self.name_tokens = _tokenize(name_clean)
         self.name_token_set = set(self.name_tokens)
-        self.name_char_ngrams = get_char_ngrams(self.norm_name, 3)
+        self.name_token_count = len(self.name_tokens)
+        self.name_char_ngrams = _get_char_ngrams(name_clean, min_n=2, max_n=3)
 
-        self.norm_addr = normalize_address(addr)
-        self.addr_tokens = self.norm_addr.split()
+        # Address preprocessing
+        addr_clean = _normalize_text(business_address)
+        self.addr = addr_clean
+        self.has_addr = bool(addr_clean)
+        self.addr_len = len(addr_clean)
+        self.addr_tokens = _tokenize(addr_clean)
         self.addr_token_set = set(self.addr_tokens)
-        self.addr_num_set = set(extract_numeric_tokens(self.norm_addr))
-        self.addr_char_ngrams = get_char_ngrams(self.norm_addr, 3)
+        self.addr_char_ngrams = _get_char_ngrams(addr_clean, min_n=2, max_n=3)
+        self.addr_numeric_tokens = _extract_numeric_tokens(addr_clean)
 
-        self.norm_ctry = normalize_country(ctry)
-        self.is_s3 = 1.0 if entity_id.startswith("S3-") else 0.0
+        # Country preprocessing
+        country_clean = _normalize_text(country).upper()
+        self.country = country_clean
+        self.has_country = bool(country_clean)
+
+        # Source identification based on entity_id prefix
+        if self.entity_id.startswith("S2-"):
+            self.source_type = 2
+        elif self.entity_id.startswith("S3-"):
+            self.source_type = 3
+        elif self.entity_id.startswith("S1-"):
+            self.source_type = 1
+        else:
+            self.source_type = 0
 
 
-def compute_pair_features(r1: ProcessedRecord, r2: ProcessedRecord) -> List[float]:
-    """Compute the 16 numeric features for a single candidate pair."""
-    # Name features
-    feat_name_exact = 1.0 if r1.norm_name and r1.norm_name == r2.norm_name else 0.0
-    feat_name_token_jaccard = jaccard_similarity(r1.name_token_set, r2.name_token_set)
-    feat_name_token_overlap = overlap_coefficient(r1.name_token_set, r2.name_token_set)
-    feat_name_char_sim = jaccard_similarity(r1.name_char_ngrams, r2.name_char_ngrams)
+def build_entity_record_cache(
+    df_or_records: Union[pd.DataFrame, List[Dict[str, Any]], Dict[str, Dict[str, Any]]]
+) -> Dict[str, EntityRecord]:
+    """
+    Builds a dictionary cache of EntityRecord objects from a DataFrame or record collection.
+    """
+    cache: Dict[str, EntityRecord] = {}
 
-    max_name_len = max(len(r1.norm_name), len(r2.norm_name), 1)
-    feat_name_len_diff = abs(len(r1.norm_name) - len(r2.norm_name)) / max_name_len
-    feat_name_token_diff = float(abs(len(r1.name_tokens) - len(r2.name_tokens)))
+    if isinstance(df_or_records, pd.DataFrame):
+        for row in df_or_records.itertuples(index=False):
+            eid = getattr(row, "entity_id", "")
+            bname = getattr(row, "business_name", "")
+            baddr = getattr(row, "business_address", "")
+            ctry = getattr(row, "country", "")
+            cache[str(eid)] = EntityRecord(
+                entity_id=eid,
+                business_name=bname,
+                business_address=baddr,
+                country=ctry,
+            )
+    elif isinstance(df_or_records, dict):
+        for eid, data in df_or_records.items():
+            cache[str(eid)] = EntityRecord(
+                entity_id=eid,
+                business_name=data.get("business_name", ""),
+                business_address=data.get("business_address", ""),
+                country=data.get("country", ""),
+            )
+    elif isinstance(df_or_records, list):
+        for item in df_or_records:
+            eid = item.get("entity_id", "")
+            cache[str(eid)] = EntityRecord(
+                entity_id=eid,
+                business_name=item.get("business_name", ""),
+                business_address=item.get("business_address", ""),
+                country=item.get("country", ""),
+            )
+    return cache
 
-    # Address features
-    feat_addr_exact = 1.0 if r1.norm_addr and r1.norm_addr == r2.norm_addr else 0.0
-    feat_addr_token_jaccard = jaccard_similarity(r1.addr_token_set, r2.addr_token_set)
-    feat_addr_num_overlap = jaccard_similarity(r1.addr_num_set, r2.addr_num_set)
-    feat_addr_char_sim = jaccard_similarity(r1.addr_char_ngrams, r2.addr_char_ngrams)
 
-    max_addr_len = max(len(r1.norm_addr), len(r2.norm_addr), 1)
-    feat_addr_len_diff = abs(len(r1.norm_addr) - len(r2.norm_addr)) / max_addr_len
+def compute_pair_features(rec1: EntityRecord, rec2: EntityRecord) -> List[float]:
+    """
+    Compute similarity feature vector for a single pair of entities.
+    Returns a list of 17 float values matching FEATURE_NAMES.
+    """
+    # 1. Name features
+    if rec1.has_name and rec2.has_name:
+        name_exact = 1.0 if rec1.name == rec2.name else 0.0
+        name_jaccard = jaccard_similarity(rec1.name_token_set, rec2.name_token_set)
+        name_overlap = overlap_coefficient(rec1.name_token_set, rec2.name_token_set)
+        name_char_jaccard = jaccard_similarity(rec1.name_char_ngrams, rec2.name_char_ngrams)
+        name_len_diff = float(abs(rec1.name_len - rec2.name_len))
+        name_token_count_diff = float(abs(rec1.name_token_count - rec2.name_token_count))
+    else:
+        name_exact = 0.0
+        name_jaccard = 0.0
+        name_overlap = 0.0
+        name_char_jaccard = 0.0
+        name_len_diff = float(abs(rec1.name_len - rec2.name_len))
+        name_token_count_diff = float(abs(rec1.name_token_count - rec2.name_token_count))
 
-    # Country features
-    feat_country_match = 1.0 if r1.norm_ctry != "UNKNOWN" and r1.norm_ctry == r2.norm_ctry else 0.0
-    feat_country_missing = 1.0 if r1.norm_ctry == "UNKNOWN" or r2.norm_ctry == "UNKNOWN" else 0.0
+    # 2. Address features
+    if rec1.has_addr and rec2.has_addr:
+        addr_exact = 1.0 if rec1.addr == rec2.addr else 0.0
+        addr_jaccard = jaccard_similarity(rec1.addr_token_set, rec2.addr_token_set)
+        addr_num_overlap = overlap_coefficient(rec1.addr_numeric_tokens, rec2.addr_numeric_tokens)
+        addr_char_jaccard = jaccard_similarity(rec1.addr_char_ngrams, rec2.addr_char_ngrams)
+        addr_len_diff = float(abs(rec1.addr_len - rec2.addr_len))
+    else:
+        addr_exact = 0.0
+        addr_jaccard = 0.0
+        addr_num_overlap = 0.0
+        addr_char_jaccard = 0.0
+        addr_len_diff = float(abs(rec1.addr_len - rec2.addr_len))
 
-    # Meta features
-    feat_name_missing = 1.0 if not r1.norm_name or not r2.norm_name else 0.0
-    feat_addr_missing = 1.0 if not r1.norm_addr or not r2.norm_addr else 0.0
-    feat_source_is_s3 = r2.is_s3
+    # 3. Country features
+    if rec1.has_country and rec2.has_country:
+        country_exact = 1.0 if rec1.country == rec2.country else 0.0
+        country_missing = 0.0
+    else:
+        country_exact = 0.0
+        country_missing = 1.0
+
+    # 4. Meta features
+    missing_name = 1.0 if (not rec1.has_name or not rec2.has_name) else 0.0
+    missing_addr = 1.0 if (not rec1.has_addr or not rec2.has_addr) else 0.0
+    is_s2 = 1.0 if rec2.source_type == 2 else 0.0
+    is_s3 = 1.0 if rec2.source_type == 3 else 0.0
 
     return [
-        feat_name_exact,
-        feat_name_token_jaccard,
-        feat_name_token_overlap,
-        feat_name_char_sim,
-        feat_name_len_diff,
-        feat_name_token_diff,
-        feat_addr_exact,
-        feat_addr_token_jaccard,
-        feat_addr_num_overlap,
-        feat_addr_char_sim,
-        feat_addr_len_diff,
-        feat_country_match,
-        feat_country_missing,
-        feat_name_missing,
-        feat_addr_missing,
-        feat_source_is_s3,
+        name_exact,
+        name_jaccard,
+        name_overlap,
+        name_char_jaccard,
+        name_len_diff,
+        name_token_count_diff,
+        addr_exact,
+        addr_jaccard,
+        addr_num_overlap,
+        addr_char_jaccard,
+        addr_len_diff,
+        country_exact,
+        country_missing,
+        missing_name,
+        missing_addr,
+        is_s2,
+        is_s3,
     ]
+
+
+class FeatureExtractor:
+    """
+    Feature extraction engine that processes candidate pairs and produces
+    compact numeric feature matrices.
+    """
+
+    def __init__(self, feature_names: Optional[List[str]] = None):
+        self.feature_names = feature_names or FEATURE_NAMES
+
+    def extract_features(
+        self,
+        candidate_pairs: Union[List[Tuple[str, str]], pd.DataFrame],
+        s1_records: Dict[str, EntityRecord],
+        cand_records: Dict[str, EntityRecord],
+        batch_size: int = 50000,
+    ) -> np.ndarray:
+        """
+        Extract numeric feature matrix for candidate pairs.
+        
+        Args:
+            candidate_pairs: List of (source1_entity_id, candidate_entity_id) or DataFrame
+            s1_records: Dict mapping source1_entity_id to EntityRecord
+            cand_records: Dict mapping candidate_entity_id to EntityRecord
+            batch_size: Batch size for feature array allocation
+            
+        Returns:
+            np.ndarray of shape (N, num_features) with dtype=np.float32
+        """
+        if isinstance(candidate_pairs, pd.DataFrame):
+            pairs_list = list(
+                zip(
+                    candidate_pairs["source1_entity_id"].astype(str),
+                    candidate_pairs["candidate_entity_id"].astype(str),
+                )
+            )
+        else:
+            pairs_list = candidate_pairs
+
+        num_pairs = len(pairs_list)
+        if num_pairs == 0:
+            return np.empty((0, len(self.feature_names)), dtype=np.float32)
+
+        # Allocate contiguous float32 matrix
+        X = np.zeros((num_pairs, len(self.feature_names)), dtype=np.float32)
+
+        empty_rec = EntityRecord(entity_id="UNKNOWN")
+
+        for idx, (s1_id, cand_id) in enumerate(pairs_list):
+            rec1 = s1_records.get(str(s1_id), empty_rec)
+            rec2 = cand_records.get(str(cand_id), empty_rec)
+            X[idx] = compute_pair_features(rec1, rec2)
+
+        return X
 
 
 def extract_features(
@@ -158,41 +360,17 @@ def extract_features(
     df_s2: pd.DataFrame,
     df_s3: pd.DataFrame,
 ) -> np.ndarray:
-    """Extract similarity feature matrix for all candidate pairs in candidate_pairs_df.
+    """Pairwise similarity feature extraction for the pipeline.
 
-    Returns:
-        np.ndarray of shape (N_pairs, 16) with float32 values.
+    Builds record caches for S1 and candidate universe (S2 + S3) and computes
+    feature matrix using FeatureExtractor.
     """
-    total_pairs = len(candidate_pairs_df)
-    logger.info(f"Extracting features for {total_pairs:,} candidate pairs...")
-    if total_pairs == 0:
-        return np.empty((0, len(FEATURE_NAMES)), dtype=np.float32)
+    logger.info(f"Extracting features for {len(candidate_pairs_df):,} candidate pairs...")
+    s1_cache = build_entity_record_cache(df_s1)
+    df_cand = pd.concat([df_s2, df_s3], ignore_index=True).drop_duplicates(subset=["entity_id"])
+    cand_cache = build_entity_record_cache(df_cand)
 
-    # Pre-index all records by entity_id
-    records: Dict[str, ProcessedRecord] = {}
-
-    for _, row in df_s1.iterrows():
-        eid = row["entity_id"]
-        records[eid] = ProcessedRecord(eid, row["business_name"], row["business_address"], row["country"])
-
-    for df in (df_s2, df_s3):
-        for _, row in df.iterrows():
-            eid = row["entity_id"]
-            if eid not in records:
-                records[eid] = ProcessedRecord(eid, row["business_name"], row["business_address"], row["country"])
-
-    feature_rows: List[List[float]] = []
-    default_rec = ProcessedRecord("MISSING", "", "", "UNKNOWN")
-
-    for _, row in candidate_pairs_df.iterrows():
-        s1_id = row["source1_entity_id"]
-        cand_id = row["candidate_entity_id"]
-
-        r1 = records.get(s1_id, default_rec)
-        r2 = records.get(cand_id, default_rec)
-
-        feature_rows.append(compute_pair_features(r1, r2))
-
-    X = np.array(feature_rows, dtype=np.float32)
+    extractor = FeatureExtractor()
+    X = extractor.extract_features(candidate_pairs_df, s1_cache, cand_cache)
     logger.info(f"Feature matrix created with shape: {X.shape}")
     return X

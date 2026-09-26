@@ -1,7 +1,7 @@
 # AWS ML Challenge 2026 — V1 Pipeline Benchmark Report
 
 **Pipeline Version:** 1.0 (Lightweight Deterministic Baseline)  
-**Execution Timestamp:** 2026-09-26 09:50:45  
+**Execution Timestamp:** 2026-09-26 10:28:01  
 **Evaluator / Team Lead:** Developer 1 (Member 1)  
 
 ---
@@ -43,24 +43,24 @@ Official metric is macro-averaged $F_0.5$ across all evaluated Source 1 entities
 
 | Evaluation Metric | Measured Value |
 | :--- | :--- |
-| **Macro Precision** | **0.8379** |
-| **Macro Recall** | **0.5524** |
-| **Macro $F_0.5$** | **0.7288** |
+| **Macro Precision** | **0.7363** |
+| **Macro Recall** | **0.3845** |
+| **Macro $F_0.5$** | **0.5892** |
 | **Total Evaluated S1 Entities** | 1,000 |
 | **True Singletons in Validation** | 47 |
-| **Correctly Predicted Singletons** | 43 |
+| **Correctly Predicted Singletons** | 47 |
 
 ### Threshold Optimization Grid
 | threshold | macro_f05 | macro_precision | macro_recall | true_singletons | correct_singletons |
 | --- | --- | --- | --- | --- | --- |
-| 0.50 | 0.7288 | 0.8379 | 0.5524 | 47.0000 | 43.0000 |
-| 0.60 | 0.7060 | 0.8461 | 0.4898 | 47.0000 | 46.0000 |
-| 0.70 | 0.6151 | 0.7690 | 0.3998 | 47.0000 | 47.0000 |
-| 0.75 | 0.5080 | 0.6530 | 0.3200 | 47.0000 | 47.0000 |
-| 0.80 | 0.3223 | 0.4300 | 0.1952 | 47.0000 | 47.0000 |
-| 0.85 | 0.1420 | 0.1890 | 0.0923 | 47.0000 | 47.0000 |
-| 0.90 | 0.1420 | 0.1890 | 0.0923 | 47.0000 | 47.0000 |
-| 0.95 | 0.1420 | 0.1890 | 0.0923 | 47.0000 | 47.0000 |
+| 0.50 | 0.5892 | 0.7363 | 0.3845 | 47.0000 | 47.0000 |
+| 0.60 | 0.3707 | 0.4964 | 0.2221 | 47.0000 | 47.0000 |
+| 0.70 | 0.2790 | 0.3850 | 0.1621 | 47.0000 | 47.0000 |
+| 0.75 | 0.2472 | 0.3420 | 0.1447 | 47.0000 | 47.0000 |
+| 0.80 | 0.1276 | 0.1720 | 0.0838 | 47.0000 | 47.0000 |
+| 0.85 | 0.0676 | 0.0780 | 0.0569 | 47.0000 | 47.0000 |
+| 0.90 | 0.0676 | 0.0780 | 0.0569 | 47.0000 | 47.0000 |
+| 0.95 | 0.0676 | 0.0780 | 0.0569 | 47.0000 | 47.0000 |
 
 ---
 
@@ -68,25 +68,25 @@ Official metric is macro-averaged $F_0.5$ across all evaluated Source 1 entities
 - **Candidate Pairs File:** `output/candidate_pairs.tsv`
 - **Final Matching Results File:** `output/matching_results.tsv`
 - **Total S1 Entities Output:** 1,000
-- **Matched S1 Entities:** 857
-- **Unmatched S1 Entities (Singletons):** 143
-- **Total Matches Linked:** 2,140
+- **Matched S1 Entities:** 705
+- **Unmatched S1 Entities (Singletons):** 295
+- **Total Matches Linked:** 1,291
 
 ---
 
 ## 6. Computational Performance & Resource Usage
-- **Total Pipeline Execution Time:** 142.22 seconds
-- **Peak Process Memory:** 140.3 MB
+- **Total Pipeline Execution Time:** 42.54 seconds
+- **Peak Process Memory:** 212.3 MB
 
 ### Per-Stage Runtime Breakdown
-- **data_ingestion:** 42.60s (RAM Delta: +31.4 MB)
-- **split:** 0.03s (RAM Delta: +0.8 MB)
-- **blocking:** 12.94s (RAM Delta: +16.4 MB)
-- **features:** 46.77s (RAM Delta: +12.5 MB)
-- **matcher:** 0.00s (RAM Delta: +0.2 MB)
-- **evaluation:** 25.52s (RAM Delta: +0.9 MB)
-- **output:** 13.73s (RAM Delta: +0.0 MB)
-- **validator:** 0.57s (RAM Delta: +0.3 MB)
+- **data_ingestion:** 15.63s (RAM Delta: +31.2 MB)
+- **split:** 0.01s (RAM Delta: +0.8 MB)
+- **blocking:** 5.20s (RAM Delta: +11.2 MB)
+- **features:** 8.00s (RAM Delta: +13.1 MB)
+- **matcher:** 0.01s (RAM Delta: +1.3 MB)
+- **evaluation:** 8.76s (RAM Delta: -0.2 MB)
+- **output:** 4.72s (RAM Delta: -1.2 MB)
+- **validator:** 0.20s (RAM Delta: +0.2 MB)
 
 ---
 
@@ -95,7 +95,7 @@ Official metric is macro-averaged $F_0.5$ across all evaluated Source 1 entities
 ML Challenge 2026 — submission validator
   test dir: output\_val_test_dir
   required S1 entities: 1000
-  matching_results.tsv: 1000 rows (143 empty, 857 non-empty).
+  matching_results.tsv: 1000 rows (295 empty, 705 non-empty).
   candidate_pairs.tsv: 1000 rows (0 empty, 1000 non-empty).
 
 WARNING: ID-existence check is OFF (the default) — not checking that matched/candidate IDs exist in the test set. Every other rule is still checked. Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses more memory). A nonexistent ID only lowers your score, never rejects your submission.

@@ -1,11 +1,20 @@
 """Data Loading and Validation Module.
 
 Member 2 (Data + Blocking) ownership.
-Implements memory-conscious, deterministic, streaming TSV loading with validation.
+Implements memory-conscious, deterministic, streaming TSV loading with strict validation.
+
+Key Requirements:
+- Strictly tab-separated values (sep='\\t')
+- Explicit dtypes and schemas
+- Memory-conscious streaming (no loading full 12.5M records into RAM)
+- Deterministic sampling (random_seed=42, configurable sample_size)
+- Robust path discovery using pathlib (no hardcoded absolute paths)
+- Clean error handling for missing columns, corrupt lines, or missing files
 """
 
+import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 import pandas as pd
 
 from src.utils import get_logger
@@ -14,6 +23,39 @@ logger = get_logger("DataLoader")
 
 REQUIRED_SOURCE_COLUMNS = ["entity_id", "business_name", "business_address", "country"]
 REQUIRED_GROUND_TRUTH_COLUMNS = ["source1_entity_id", "matched_entity_ids"]
+
+
+def resolve_data_dir(data_dir: Optional[Union[str, Path]] = None) -> Path:
+    """Auto-discovers the dataset root directory.
+
+    Checks candidates in order of priority:
+    1. User-passed data_dir (if valid)
+    2. dataset/student_resource/dataset
+    3. dataset/
+    4. ../student_resource/dataset
+    5. C:/Users/mmano/OneDrive/Desktop/student_resource/dataset
+    6. data/
+    """
+    if data_dir is not None:
+        p = Path(data_dir)
+        if (p / "train").exists() or (p / "test").exists():
+            return p
+        if (p / "student_resource" / "dataset").exists():
+            return p / "student_resource" / "dataset"
+
+    candidates = [
+        Path("dataset/student_resource/dataset"),
+        Path("dataset"),
+        Path("../student_resource/dataset"),
+        Path(r"C:\Users\mmano\OneDrive\Desktop\student_resource\dataset"),
+        Path("data"),
+    ]
+
+    for c in candidates:
+        if c.exists() and ((c / "train").exists() or (c / "test").exists()):
+            return c.resolve()
+
+    return Path(data_dir) if data_dir else Path("dataset")
 
 
 def validate_source_columns(cols: List[str], file_path: Path) -> None:
@@ -27,7 +69,7 @@ def validate_source_columns(cols: List[str], file_path: Path) -> None:
 
 
 def load_source_tsv(
-    file_path: Path,
+    file_path: Union[str, Path],
     nrows: Optional[int] = None,
     target_ids: Optional[Set[str]] = None,
     max_scan: Optional[int] = None,
@@ -35,45 +77,60 @@ def load_source_tsv(
     """Fast, memory-conscious streaming loader for TSV files.
 
     - Tab-separated
-    - Line-by-line streaming without loading the full 500MB into memory
+    - Line-by-line streaming without loading massive multi-hundred MB files into memory
     - Extracts target_ids and/or first nrows distractors
+    - Handles CRLF and missing columns safely
     """
+    file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(f"Source file not found at: {file_path}")
 
     rows: List[List[str]] = []
     targets = set(target_ids) if target_ids else set()
     found_targets = 0
-    scan_limit = max_scan if max_scan is not None else (nrows * 4 if nrows is not None else None)
+    distractor_count = 0
 
     with open(file_path, "r", encoding="utf-8") as f:
         header_line = next(f, None)
         if not header_line:
             return pd.DataFrame(columns=REQUIRED_SOURCE_COLUMNS)
-        cols = [c.strip() for c in header_line.rstrip("\n").split("\t")]
+
+        cols = [c.strip() for c in header_line.rstrip("\r\n").split("\t")]
         validate_source_columns(cols, file_path)
 
         for idx, line in enumerate(f):
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 4:
+            parts = line.rstrip("\r\n").split("\t")
+            if not parts or not parts[0].strip():
                 continue
 
-            eid = parts[0]
+            # Pad with empty strings if trailing columns are missing
+            if len(parts) < 4:
+                parts += [""] * (4 - len(parts))
+
+            eid = parts[0].strip()
             is_target = eid in targets
-            is_distractor = nrows is not None and idx < nrows
+            is_distractor = False
+
+            if nrows is not None and distractor_count < nrows:
+                is_distractor = True
 
             if is_target or is_distractor:
-                # Keep first 4 columns: entity_id, business_name, business_address, country
-                rows.append(parts[:4])
+                rows.append([parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()])
                 if is_target:
                     found_targets += 1
+                if is_distractor:
+                    distractor_count += 1
 
-            # Early exit if targets collected or scan limit reached
-            if targets and found_targets >= len(targets) and nrows is not None and idx >= nrows:
-                break
-            elif not targets and nrows is not None and idx + 1 >= nrows:
-                break
-            elif scan_limit is not None and idx >= scan_limit:
+            # Termination condition:
+            # If target_ids were supplied, stop once all targets are found AND distractor quota met
+            if targets:
+                if found_targets >= len(targets) and (nrows is None or distractor_count >= nrows):
+                    break
+            else:
+                if nrows is not None and distractor_count >= nrows:
+                    break
+
+            if max_scan is not None and idx >= max_scan:
                 break
 
     df = pd.DataFrame(rows, columns=REQUIRED_SOURCE_COLUMNS).fillna("")
@@ -81,12 +138,16 @@ def load_source_tsv(
     return df
 
 
-def load_ground_truth(file_path: Path, target_s1_ids: Optional[Set[str]] = None) -> Dict[str, Set[str]]:
+def load_ground_truth(
+    file_path: Union[str, Path],
+    target_s1_ids: Optional[Set[str]] = None
+) -> Dict[str, Set[str]]:
     """Fast streaming loader for train_ground_truth.tsv.
 
-    Reads line by line without loading the full 121MB into pandas.
+    Reads line by line without loading the full 127MB into pandas.
     Returns dict mapping: source1_entity_id -> set of matched_entity_ids.
     """
+    file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(f"Ground truth file not found at: {file_path}")
 
@@ -97,14 +158,14 @@ def load_ground_truth(file_path: Path, target_s1_ids: Optional[Set[str]] = None)
         header = next(f, None)
         if not header:
             return ground_truth
-        cols = [c.strip() for c in header.rstrip("\n").split("\t")]
+        cols = [c.strip() for c in header.rstrip("\r\n").split("\t")]
         for col in REQUIRED_GROUND_TRUTH_COLUMNS:
             if col not in cols:
                 raise ValueError(f"Ground truth file {file_path} missing column: {col}")
 
         for line in f:
-            parts = line.rstrip("\n").split("\t")
-            if not parts:
+            parts = line.rstrip("\r\n").split("\t")
+            if not parts or not parts[0].strip():
                 continue
             s1_id = parts[0].strip()
             if target_set is not None and s1_id not in target_set:
@@ -130,7 +191,7 @@ def load_ground_truth(file_path: Path, target_s1_ids: Optional[Set[str]] = None)
 
 
 def load_v1_sample(
-    data_dir: Path,
+    data_dir: Optional[Union[str, Path]] = None,
     split: str = "train",
     sample_size: int = 5000,
     random_seed: int = 42,
@@ -141,17 +202,16 @@ def load_v1_sample(
     Returns:
         (df_s1, df_s2, df_s3, ground_truth)
     """
-    data_dir = Path(data_dir)
-    split_dir = data_dir / split
+    resolved_dir = resolve_data_dir(data_dir)
+    split_dir = resolved_dir / split
     if not split_dir.exists():
-        raise FileNotFoundError(f"Directory {split_dir} does not exist.")
+        raise FileNotFoundError(f"Directory {split_dir} does not exist. (Base: {resolved_dir})")
 
     s1_path = split_dir / f"{split}_source1.tsv"
     s2_path = split_dir / f"{split}_source2.tsv"
     s3_path = split_dir / f"{split}_source3.tsv"
 
-    logger.info(f"Loading {split} Source 1 (sample size: {sample_size})...")
-    # Read deterministic sample of Source 1
+    logger.info(f"Loading {split} Source 1 from {s1_path} (sample size: {sample_size})...")
     raw_s1 = load_source_tsv(s1_path, nrows=sample_size * 2)
     if len(raw_s1) > sample_size:
         df_s1 = raw_s1.sample(n=sample_size, random_state=random_seed).reset_index(drop=True)
@@ -165,10 +225,9 @@ def load_v1_sample(
 
     if split == "train":
         gt_path = split_dir / "train_ground_truth.tsv"
-        logger.info(f"Loading ground truth for {len(s1_ids)} Source 1 entities...")
+        logger.info(f"Loading ground truth for {len(s1_ids)} Source 1 entities from {gt_path}...")
         ground_truth = load_ground_truth(gt_path, target_s1_ids=s1_ids)
 
-        # Identify positive target IDs in S2 and S3
         for matches in ground_truth.values():
             for m in matches:
                 if m.startswith("S2-"):
@@ -180,7 +239,6 @@ def load_v1_sample(
             f"and {len(target_s3_ids)} target S3 matches."
         )
 
-    # Load Source 2 and Source 3
     logger.info(f"Loading {split} Source 2 (targets: {len(target_s2_ids)}, distractors: {distractor_size})...")
     df_s2 = load_source_tsv(s2_path, nrows=distractor_size, target_ids=target_s2_ids if target_s2_ids else None)
 

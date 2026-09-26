@@ -1,0 +1,15 @@
+# Git ignore for AWS ML Challenge 2026
+
+# Large dataset files (multi-gigabytes)
+dataset/
+*.tsv.gz
+*.zip
+
+# Temporary test validation directories
+output/_val_test_dir/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/

@@ -1,17 +1,41 @@
-# Git ignore for AWS ML Challenge 2026
-
-# Large dataset files (multi-gigabytes)
+# Dataset files stay private and are transferred to AWS separately.
 dataset/
-data/
-*.tsv.gz
-*.zip
 
-# Temporary test validation directories
-output/_val_test_dir/
-
-# Python cache
+# Local environments and caches.
+.venv/
 __pycache__/
-*.py[cod]
-*$py.class
+**/__pycache__/
 .pytest_cache/
-.kilo/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Runtime/build artifacts.
+build/
+catboost_info/
+*.sqlite
+.blocking-*.sqlite
+.positive-keys-*.sqlite
+
+# Generated prediction outputs.
+output/*
+!output/.gitkeep
+
+# Keep the currently trained model available for deployment; ignore future artifacts.
+models/*
+!models/.gitkeep
+!models/pair_model.joblib
+
+# Local/editor/system files.
+.vscode/
+.DS_Store
+*.pyc
+*.pyo
+*.swp
+*.log
+
+# Credentials and local configuration.
+.env
+.env.*
+!.env.example
+*.pem
+*.key

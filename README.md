@@ -1,97 +1,179 @@
-# AWS ML Challenge 2026: Business Entity Resolution Challenge
+# Amazon ML Business Entity Resolution
 
-An end-to-end Machine Learning pipeline solving the **AWS ML Challenge 2026: Business Entity Resolution Challenge**.
+## 1. Overview
 
-The objective is to identify which records from Source 2 (`S2-`) and Source 3 (`S3-`) correspond to each Source 1 (`S1-`) reference business entity, evaluated on macro-averaged $F_{0.5}$ with strict singleton handling.
+This repository provides a reproducible, precision-oriented entity-resolution
+pipeline for the ML Challenge 2026. It links records from Source 2 and Source 3
+to every Source 1 reference entity and produces the required tab-separated
+submission artifacts.
 
----
+## 2. Problem definition
 
-## V1 Master Architecture & Modules
+Given noisy business names, addresses, and country labels from three independent
+sources, identify all Source 2/Source 3 records referring to each Source 1
+business. A Source 1 entity may have zero, one, or multiple matches.
 
-The Version 1 pipeline provides a lightweight, deterministic, memory-conscious, and fully reproducible baseline:
+## 3. Dataset structure
 
-```
-DATA INGESTION (Streaming TSV)
-       ↓
-DATA VALIDATION & S1 HOLDOUT SPLIT
-       ↓
-TEXT NORMALIZATION (Names, Addresses, Open-Set Countries)
-       ↓
-MULTI-PASS BLOCKING (Core Name, Prefix, Postal/Numeric, Token Signature)
-       ↓
-PAIRWISE SIMILARITY FEATURE EXTRACTION (16 Numeric Features)
-       ↓
-BASELINE MATCHING MODEL & PROBABILITY SCORING
-       ↓
-VALIDATION THRESHOLD OPTIMIZATION (Macro F0.5)
-       ↓
-OUTPUT GENERATION & SINGLETON DETECTION (output/candidate_pairs.tsv & matching_results.tsv)
-       ↓
-OFFICIAL SUBMISSION VALIDATOR (utils/validate_submission.py)
-       ↓
-BENCHMARK REPORTING (reports/v1_benchmark.md)
-```
+All challenge files are TSV files. Record files contain `entity_id`,
+`business_name`, `business_address`, and `country`. Source is identified by the
+`S1-`, `S2-`, or `S3-` ID prefix and by the file name. Training additionally
+contains `train_ground_truth.tsv` with `source1_entity_id` and a comma-separated
+`matched_entity_ids` list. The supplied country values are US and India. Country is retained as an
+explicit string feature rather than being inferred from entity IDs.
 
-### Module Ownership & Structure
+## 4. Restrictions
 
-- **Developer 1 (Team Lead / Architecture / Integration):**
-  - `src/config.py`: Centralized configuration, CLI parameters, and dataset path resolution.
-  - `src/postprocess.py`: Threshold application, singleton detection, and official TSV formatting.
-  - `src/evaluation.py`: Entity-level precision, recall, and macro $F_{0.5}$ evaluation with singleton scoring.
-  - `src/pipeline.py`: Master pipeline orchestration and CLI.
-  - `src/inference.py`: Standalone test inference module.
-  - `src/utils.py`: Logging and performance measurement utilities.
-  - `reports/v1_benchmark.md`: Comprehensive benchmark reporting.
+The implementation uses only supplied challenge data. It performs no external
+business lookup, geocoding, API augmentation, or internet-based enrichment. It
+does not assume a closed country vocabulary and uses no prohibited identity
+source. The preferred matching model is CatBoost (GPU when available), with automatic
+fallback to CPU CatBoost and then scikit-learn LogisticRegression. Blocking and
+feature extraction remain CPU-bound.
 
-- **Developer 2 (Data / Normalization / Blocking):**
-  - `src/data_loader.py`: Streaming TSV data loader with schema verification and deterministic sampling.
-  - `src/normalizer.py`: Deterministic text normalization for business names, addresses, and open-set countries (including France).
-  - `src/blocking.py`: Multi-pass inverted index blocking with candidate capping and reduction ratio tracking.
+## 5. Architecture
 
-- **Developer 3 (Features / Baseline Matcher / Modeling):**
-  - `src/features.py`: Pairwise similarity feature extraction (16 numeric features).
-  - `src/matcher.py`: Transparent domain-weighted baseline matcher and NumPy logistic regression.
+The modular flow is: explicit TSV loading → Unicode/text normalization →
+high-recall blocking → pairwise similarity features → CatBoost (with a
+logistic-regression fallback) → thresholded prediction → submission writing.
+Public compatibility
+modules live directly under `src/`; implementation modules are under
+`src/entity_resolution/`.
 
----
+## 6. Installation
 
-## Quick Start & Reproduction
-
-### 1. Environment Setup
 ```bash
-pip install -r code/business_entity_resolution/requirements.txt
+python -m pip install -r requirements.txt
 ```
-*(Dependencies: pure `pandas`, `numpy`, `scipy` — zero heavy external frameworks required for V1).*
 
-### 2. Run V1 Pipeline
-Execute on a deterministic sample:
+Python 3.11+ is recommended. The dependency list pins pandas, NumPy,
+scikit-learn, joblib, Jupyter, and nbformat. CatBoost is intentionally optional
+because its GPU build/environment is platform-specific; install it separately
+when CatBoost is desired:
+
 ```bash
-python -m src.pipeline --sample-size 5000
+python -m pip install catboost
 ```
-Command-line options:
-- `--sample-size <int>`: Number of Source 1 entities to sample (default: `5000`).
-- `--seed <int>`: Random seed for deterministic reproducibility (default: `42`).
-- `--data-dir <path>`: Dataset root directory (auto-detects `dataset/student_resource/dataset`).
-- `--threshold <float>`: Manually specify classification threshold (default: auto-tuned on validation fold).
-- `--skip-validator`: Skip executing the official submission validator.
 
-### 3. Run Unit & Regression Tests
-Run the 14 test cases covering name normalization, diacritics, address numbers, open-set country handling, singletons, and metrics:
+## 7. Notebook order
+
+Run notebooks in this order when an interactive walkthrough is desired:
+
+1. `notebooks/01_dataset_intelligence.ipynb`
+2. `notebooks/02_matching_experiments.ipynb`
+3. `notebooks/03_model_training.ipynb`
+4. `notebooks/04_final_pipeline.ipynb`
+
+The notebooks document contracts and demonstrate in-memory APIs; the CLI remains
+the canonical end-to-end entry point.
+
+## 8. Training
+
+Train a persisted model from the supplied training directory:
+
 ```bash
-python -m unittest tests/test_v1_pipeline.py
+python run_pipeline.py --mode train --data-dir dataset --model-dir models
 ```
 
-### 4. Official Submission Validator
-Run the official validator against generated outputs:
+By default training tries CatBoost on GPU, then CPU CatBoost, then
+LogisticRegression if CatBoost or its requested device is unavailable. Select a
+model/device explicitly when needed:
+
 ```bash
-python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir dataset/student_resource/dataset/test
+python run_pipeline.py --mode train --model-type catboost --device gpu
+python run_pipeline.py --mode train --model-type logistic
 ```
 
----
+For GPU training, install a CatBoost package compatible with the host CUDA
+runtime and verify the NVIDIA driver/CUDA setup before running the command.
+`--device auto` (the default) attempts GPU first and is safe on CPU-only hosts.
+Only model training is accelerated; blocking, feature generation, and
+prediction orchestration remain CPU-bound.
 
-## V1 Benchmark Highlights
-See the full benchmark report in [`reports/v1_benchmark.md`](reports/v1_benchmark.md):
-- **Candidate Reduction Ratio:** `0.998421` (reduces comparison space by over 99.8%)
-- **Official Validator Status:** `PASS`
-- **Peak Process Memory:** `< 20 MB RAM`
-- **Full Reproducibility:** 100% deterministic with seed `42`
-- **Fair Play Compliant:** Operates strictly on provided tabular data without external API lookups.
+Positive pairs come from the supplied ground truth. Blocked, unlabelled pairs are
+sampled as negatives. The resulting model is saved as `models/pair_model.joblib`. Existing artifacts
+created by the logistic implementation remain loadable; newly saved artifacts
+include the selected backend metadata.
+
+## 9. Prediction
+
+Train and predict together:
+
+```bash
+python run_pipeline.py --mode all --data-dir dataset --model-dir models --output-dir output
+```
+
+For explicit source files and an existing model:
+
+```bash
+python run_pipeline.py \
+  --source1 dataset/test/test_source1.tsv \
+  --source2 dataset/test/test_source2.tsv \
+  --source3 dataset/test/test_source3.tsv \
+  --model models/pair_model.joblib --output output \
+  --threshold 0.78 --batch-size 4096 --max-candidates 500 --n-jobs 1 --verbose
+```
+
+## 10. Output
+
+Prediction writes `output/matching_results.tsv` and
+`output/candidate_pairs.tsv` (or the same two names beneath the directory
+passed to `--output`). Every Source 1 row is retained. ID lists are comma
+separated; empty lists represent singletons.
+
+## 11. Evaluation
+
+Use `python run_pipeline.py --mode evaluate` for the training diagnostic. The
+pipeline reports pair-level and entity-level metrics where available. The
+primary threshold-selection metric is F0.5, which weights precision more
+heavily than recall; precision, recall, F1, and confusion information remain
+visible.
+
+## 12. Computational considerations
+
+Blocking avoids an unrestricted Cartesian comparison and uses country, name-token,
+address-digit, and phonetic keys. The inverted index is stored in a temporary
+SQLite database in the working directory, so the 10M+ comparison rows are not
+converted into Python dictionaries or nested dict/set indexes. `--max-candidates`
+is enforced in each indexed per-key lookup and bounded merge for every Source 1
+row. The `(key, ordinal)` WITHOUT ROWID primary key lets SQLite return each
+blocking slice in ordinal order; Python merges only those bounded slices, avoiding
+the previous per-row global `GROUP BY`/`ORDER BY` temp sort. Training uses reservoir
+sampling to retain only the configured `max_training_pairs` total (500,000 by
+default), split according to `negative_ratio`, and never materializes all
+positive or negative pairs;
+prediction still emits the same candidate mapping and output files.
+
+Candidate and feature progress is logged at the smaller of every 10,000 records
+or 1%, including elapsed rate and ETA when the input size is known. For a 16GB
+host, keep the candidate bound and process one command at a time:
+
+```bash
+python run_pipeline.py --mode train --max-candidates 500 --max-training-pairs 500000 --device auto --verbose
+python run_pipeline.py --mode predict --max-candidates 500 --device auto --verbose
+```
+
+The temporary `.blocking-*.sqlite` file is removed automatically. Blocking,
+feature extraction, and prediction orchestration remain CPU-bound; CatBoost
+still attempts GPU first with `--device auto` and falls back to CPU.
+
+## 13. Reproducibility
+
+All paths, thresholds, candidate limits, and random seeds are configurable.
+Dependencies are pinned, normalization is deterministic, and negative sampling
+uses a fixed default seed of 42. Model artifacts are generated locally rather
+than committed.
+
+## 14. Limitations
+
+The phonetic key is intentionally lightweight and language agnostic. Logistic
+regression cannot model every nonlinear interaction, and aggressive candidate
+limits can reduce recall on unusually dense blocks. No dataset-specific measured
+score is claimed in this documentation.
+
+## 15. Future improvements
+
+Potential extensions include calibrated gradient-boosted pair models, learned
+country-aware transliteration, adaptive multi-pass blocking, uncertainty
+sampling, larger-scale batch scoring, and systematic threshold selection on a
+held-out validation split.
